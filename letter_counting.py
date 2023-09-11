@@ -57,14 +57,13 @@ def get_letter_count_output(input: str, count_only_previous: bool=True) -> np.ar
 if __name__ == '__main__':
     start_time = time.time()
     args = _parse_args()
-    print(args)
 
     # Constructs the vocabulary: lowercase letters a to z and space
     vocab = [chr(ord('a') + i) for i in range(0, 26)] + [' ']
+    print("vocab: ", vocab)
     vocab_index = Indexer()
     for char in vocab:
         vocab_index.add_and_get_index(char)
-    print(repr(vocab_index))
 
     count_only_previous = True if args.task == "BEFORE" else False
 
