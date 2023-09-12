@@ -1,5 +1,5 @@
 # transformer.py
-
+import math
 import time
 import torch
 import torch.nn as nn
@@ -31,77 +31,73 @@ class LetterCountingExample(object):
 # to return distributions over the labels (0, 1, or 2).
 class Transformer(nn.Module):
     def __init__(self, vocab_size, num_positions, d_model, d_internal, num_classes, num_layers):
+        """
+        :param vocab_size: vocabulary size of the embedding layer
+        :param num_positions: max sequence length that will be fed to the model; should be 20
+        :param d_model: see TransformerLayer
+        :param d_internal: see TransformerLayer
+        :param num_classes: number of classes predicted at the output layer; should be 3
+        :param num_layers: number of TransformerLayers to use; can be whatever you want
+        """
         super().__init__()
-        self.embedding = nn.Embedding(vocab_size, d_model)
-        self.positional_encoding = PositionalEncoding(d_model, num_positions)
-        self.transformer_layers = nn.ModuleList([TransformerLayer(d_model, d_internal) for _ in range(num_layers)])
-        self.fc = nn.Linear(d_model, vocab_size)  # Output dimension matches the vocabulary size
+        self.embed = nn.Embedding(vocab_size, d_model)
+        #20x3
+        self.encoder = PositionalEncoding(d_model)
+        self.transformer = TransformerLayer(d_model, d_internal)
+        self.W = nn.Linear(d_internal, num_classes)
 
     def forward(self, indices):
-        x = self.embedding(indices)
-        x = self.positional_encoding(x)
+        """
 
-        attentions = []
-        for layer in self.transformer_layers:
-            x = layer(x)
+        :param indices: list of input indices
+        :return: A tuple of the softmax log probabilities (should be a 20x3 matrix) and a list of the attention
+        maps you use in your layers (can be variable length, but each should be a 20x20 matrix)
+        """
+        z = self.embed(indices)
+        a = self.encoder.forward(z)
+        b, att = self.transformer.forward(a)
+        c = self.W(b)
+        e = nn.functional.log_softmax(c)
 
-        # Predict log probabilities with log-softmax activation function
-        log_probs = nn.functional.log_softmax(self.fc(x), dim=-1)
-
-        return log_probs, attentions
+        return e, att
 
 
 
 class TransformerLayer(nn.Module):
-    def __init__(self, d_model, d_internal, num_heads=4):
-        super(TransformerLayer, self).__init__()
-
-        self.num_heads = num_heads
-        self.head_dim = d_internal // num_heads
-
-        self.q_linear = nn.Linear(d_model, d_internal)
-        self.k_linear = nn.Linear(d_model, d_internal)
-        self.v_linear = nn.Linear(d_model, d_internal)
-
-        self.out_linear = nn.Linear(d_internal, d_model)
-
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
-
-        self.feed_forward = nn.Sequential(
-            nn.Linear(d_model, d_internal),
-            nn.ReLU(),
-            nn.Linear(d_internal, d_model)
-        )
+    def __init__(self, d_model, d_internal):
+        """
+        :param d_model: The dimension of the inputs and outputs of the layer (note that the inputs and outputs
+        have to be the same size for the residual connection to work)
+        :param d_internal: The "internal" dimension used in the self-attention computation. Your keys and queries
+        should both be of this length.
+        """
+        super().__init__()
+        self.internal = d_model
+        self.WQ = nn.Linear(d_internal, d_model)
+        self.WK = nn.Linear(d_internal, d_model)
+        self.WV = nn.Linear(d_internal, d_model)
+        self.Lin = nn.Linear(d_internal, d_internal)
 
     def forward(self, input_vecs):
-        if len(input_vecs.shape) == 2:
-            # Handle 2D input: add batch and sequence length dimensions
-            input_vecs = input_vecs.unsqueeze(1)  # Add sequence length dimension
+        q = torch.matmul( input_vecs, self.WQ.weight)
+        k = torch.matmul( input_vecs, self.WK.weight)
+        v = torch.matmul( input_vecs, self.WV.weight)
 
-        batch_size, seq_len, d_model = input_vecs.size()
-        q = self.q_linear(input_vecs)
-        k = self.k_linear(input_vecs)
-        v = self.v_linear(input_vecs)
+        att = self.attention(q,k,v, self.internal)
+        #lin lin lin relu lin lin softmax
 
-        q = q.view(batch_size, seq_len, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-        k = k.view(batch_size, seq_len, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-        v = v.view(batch_size, seq_len, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        c = torch.nn.functional.relu(att) 
+        d = self.Lin(c) 
+        return d, att
 
-        scores = torch.matmul(q, k.permute(0, 1, 3, 2)) / (self.head_dim ** 0.5)
-        attn_weights = torch.nn.functional.softmax(scores, dim=-1)
-        attn_output = torch.matmul(attn_weights, v)
-
-        attn_output = attn_output.permute(0, 2, 1, 3).contiguous().view(batch_size, seq_len, -1)
-        attn_output = self.out_linear(attn_output)
-
-        attention_output = self.norm1(input_vecs + attn_output)
-
-        ff_output = self.feed_forward(attention_output)
-
-        output = self.norm2(attention_output + ff_output)
-
+    
+    def attention(self, q, k, v, d_k, mask=None, dropout=None):
+        scores = torch.matmul(q, k.transpose(-2, -1)) /  math.sqrt(d_k)
+        scores = torch.nn.functional.softmax(scores, dim = -1)
+            
+        output = torch.matmul(scores, v)
         return output
+
 
 # Implementation of positional encoding that you can use in your network
 class PositionalEncoding(nn.Module):
@@ -136,68 +132,43 @@ class PositionalEncoding(nn.Module):
             return x + self.emb(indices_to_embed).type(x.dtype)
 
 
-# This is a skeleton for train_classifier: you can implement this however you want
 def train_classifier(args, train, dev):
     vocab_size = 27
-    model = Transformer(
-        vocab_size=vocab_size,
-        num_positions=20,
-        d_model=128,
-        d_internal=512,
-        num_classes=3,  # Three classes: 0, 1, 2
-        num_layers=4
-    )
-
-    model.zero_grad()
-    model.train()
+    num_positions = 20
+    d_model = 100
+    d_internal = 50
+    model = Transformer(vocab_size, num_positions, d_model, d_internal, 3, 1)
+    
+    # model.forward(blah)
+    loss_fcn = nn.NLLLoss()
+    
+    # result = model.forward(blah)
+    
+    # loss = loss_fcn(result, train[0].output_tensor) 
+    # print(loss)
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
-    loss_fn = nn.CrossEntropyLoss()
 
-    # Convert data into DataLoader for batching
-    train_data = TensorDataset(torch.stack([example.input_tensor for example in train]),
-                               torch.stack([example.output_tensor for example in train]))
-    train_loader = DataLoader(train_data, batch_size=32, shuffle=True)
-
-    # Training loop
-    num_epochs = 5
-    for epoch in range(num_epochs):
-        model.train()
-        total_loss = 0.0
-
-        for batch_input, batch_target in train_loader:
-            optimizer.zero_grad()
-
-            # Forward pass
-            log_probs, _ = model(batch_input)  # Model returns log probabilities
-
-            # Reshape log_probs to (batch_size * seq_len, 3)
-            log_probs_flat = log_probs.view(-1, 3)
-
-            # Expand batch_target to match the number of classes (3)
-            batch_target_flat = batch_target.view(-1, 1).expand(-1, 3).contiguous().view(-1)
-
-            # Compute the loss
-            loss = loss_fn(log_probs_flat, batch_target_flat)
-
-            # Backpropagation
+    num_epochs = 10
+    for t in range(0, num_epochs):
+        loss_this_epoch = 0.0
+        random.seed(t)
+        # You can use batching if you'd like
+        ex_idxs = [i for i in range(0, len(train))]
+        # ex_idxs = [i for i in range(0, 20)]
+        random.shuffle(ex_idxs)
+        
+        for x in ex_idxs:
+            ex = train[x]
+            model.zero_grad()
+            result, _ = model.forward(ex.input_tensor)
+            loss = loss_fcn(result, ex.output_tensor) 
+            
             loss.backward()
             optimizer.step()
-
-            total_loss += loss.item()
-
-            print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {total_loss / len(train_loader)}")
-
-    # Evaluate the model on the dev set (similar to your decode function)
+            loss_this_epoch += loss.item()
+        print(loss_this_epoch)
     model.eval()
-    dev_input_tensors = torch.stack([example.input_tensor for example in dev])
-    dev_output_tensors = torch.stack([example.output_tensor for example in dev])
-    with torch.no_grad():
-        dev_outputs, _ = model(dev_input_tensors)  # Model returns log probabilities
-
-    # You can compute metrics or do further analysis on dev_outputs here
-
     return model
-
     
 
 
@@ -224,6 +195,7 @@ def decode(model: Transformer, dev_examples: List[LetterCountingExample], do_pri
         ex = dev_examples[i]
         (log_probs, attn_maps) = model.forward(ex.input_tensor)
         predictions = np.argmax(log_probs.detach().numpy(), axis=1)
+        print(predictions)
         if do_print:
             print("INPUT %i: %s" % (i, ex.input))
             print("GOLD %i: %s" % (i, repr(ex.output.astype(dtype=int))))
