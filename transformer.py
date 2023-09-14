@@ -43,6 +43,7 @@ class Transformer(nn.Module):
         """
         z = self.embedding_layer(indices)
         encoded_tensor = self.positional_encoder.forward(z)
+        # Cycle through the number of transformation layers
         for transformer_layer in self.transformer_layers:
            linear_layer_transformer, attention = transformer_layer.forward(encoded_tensor)
         matrix_tranformation = self.W_matrix(linear_layer_transformer)
@@ -53,6 +54,7 @@ class Transformer(nn.Module):
 
 # Your implementation of the Transformer layer goes here. It should take vectors and return the same number of vectors
 # of the same length, applying self-attention, the feedforward layer, etc.
+# 
 class TransformerLayer(nn.Module):
     def __init__(self, d_model, d_internal):
         """
@@ -63,27 +65,28 @@ class TransformerLayer(nn.Module):
         """
         super().__init__()
         self.internal = d_model
-        self.W_Q_matrix = nn.Linear(d_internal, d_model)
-        self.W_Q_weight = self.W_Q_matrix.weight
-        self.W_K_matrix = nn.Linear(d_internal, d_model)
-        self.W_K_weight = self.W_K_matrix.weight
-        self.W_V_matrix = nn.Linear(d_internal, d_model)
-        self.W_V_weight = self.W_V_matrix.weight
+        self.W_Query_matrix = nn.Linear(d_internal, d_model)
+        self.W_Q_weight = self.W_Query_matrix.weight
+        self.W_Key_matrix = nn.Linear(d_internal, d_model)
+        self.W_K_weight = self.W_Key_matrix.weight
+        self.W_Value_matrix = nn.Linear(d_internal, d_model)
+        self.W_V_weight = self.W_Value_matrix.weight
         self.linear_layer = nn.Linear(d_internal, d_internal)
 
+    # tranformer
     def forward(self, input_vecs):
-        q = torch.matmul(input_vecs, self.W_Q_weight)
-        k = torch.matmul(input_vecs, self.W_K_weight)
-        v = torch.matmul(input_vecs, self.W_K_weight)
+        query = torch.matmul(input_vecs, self.W_Q_weight)
+        key = torch.matmul(input_vecs, self.W_K_weight)
 
+        scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(self.internal)
+        attention = torch.nn.functional.softmax(scores, dim=-1)
+        
+        value = torch.matmul(input_vecs, self.W_K_weight)
+        attended_values = torch.matmul(attention, value)
+        ReLU = torch.nn.functional.relu(attended_values) 
+        step = self.linear_layer(ReLU) 
+        return step, attention
 
-        matrix_multiplication = torch.matmul(q, k.transpose(-2, -1)) /  math.sqrt(self.internal)
-        scores = torch.nn.functional.softmax(matrix_multiplication, dim = -1)
-            
-        attention = torch.matmul(scores, v)
-        c = torch.nn.functional.relu(attention) 
-        d = self.linear_layer(c) 
-        return d, attention
 
 
 # Implementation of positional encoding that you can use in your network
@@ -140,7 +143,7 @@ class PositionalEncoding(nn.Module):
 
 # This is a skeleton for train_classifier: you can implement this however you want
 def train_classifier(args, train, dev):
-    model = Transformer(vocab_size=27, num_positions=20, d_model=100, d_internal=50, num_classes=3, num_layers=2)
+    model = Transformer(vocab_size=27, num_positions=20, d_model=100, d_internal=50, num_classes=3, num_layers=3)
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
     num_epochs = 10
     for t in range(0, num_epochs):
