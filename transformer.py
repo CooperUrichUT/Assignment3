@@ -1,6 +1,5 @@
 # transformer.py
 import math
-import time
 import torch
 import torch.nn as nn
 import numpy as np
@@ -9,14 +8,7 @@ from torch import optim
 import matplotlib.pyplot as plt
 from typing import List
 from utils import *
-from torch.utils.data import DataLoader, TensorDataset
 
-
-# Wraps an example: stores the raw input string (input), the indexed form of the string (input_indexed),
-# a tensorized version of that (input_tensor), the raw outputs (output; a numpy array) and a tensorized version
-# of it (output_tensor).
-# Per the task definition, the outputs are 0, 1, or 2 based on whether the character occurs 0, 1, or 2 or more
-# times previously in the input sequence (not counting the current occurrence).
 class LetterCountingExample(object):
     def __init__(self, input: str, output: np.array, vocab_index: Indexer):
         self.input = input
@@ -40,9 +32,8 @@ class Transformer(nn.Module):
         :param num_layers: number of TransformerLayers to use; can be whatever you want
         """
         super().__init__()
-        self.embed = nn.Embedding(vocab_size, d_model)
-        #20x3
-        self.encoder = PositionalEncoding(d_model)
+        self.embeddings = nn.Embedding(vocab_size, d_model)
+        self.positions = PositionalEncoding(d_model)
         self.transformer = TransformerLayer(d_model, d_internal)
         self.W = nn.Linear(d_internal, num_classes)
 
@@ -53,16 +44,18 @@ class Transformer(nn.Module):
         :return: A tuple of the softmax log probabilities (should be a 20x3 matrix) and a list of the attention
         maps you use in your layers (can be variable length, but each should be a 20x20 matrix)
         """
-        z = self.embed(indices)
-        a = self.encoder.forward(z)
+        z = self.embeddings(indices)
+        a = self.positions.forward(z)
+        
         b, att = self.transformer.forward(a)
         c = self.W(b)
-        e = nn.functional.log_softmax(c)
+        e = torch.nn.functional.log_softmax(c, dim=-1)
 
         return e, att
 
 
-
+# Your implementation of the Transformer layer goes here. It should take vectors and return the same number of vectors
+# of the same length, applying self-attention, the feedforward layer, etc.
 class TransformerLayer(nn.Module):
     def __init__(self, d_model, d_internal):
         """
@@ -88,10 +81,14 @@ class TransformerLayer(nn.Module):
 
         c = torch.nn.functional.relu(att) 
         d = self.Lin(c) 
+        # e = torch.nn.functional.relu(d)
+        # f = self.Lin2(e) 
+        # print("att:",att)
         return d, att
 
     
     def attention(self, q, k, v, d_k, mask=None, dropout=None):
+    
         scores = torch.matmul(q, k.transpose(-2, -1)) /  math.sqrt(d_k)
         scores = torch.nn.functional.softmax(scores, dim = -1)
             
@@ -100,6 +97,7 @@ class TransformerLayer(nn.Module):
 
 
 # Implementation of positional encoding that you can use in your network
+#Undo mods
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model: int, num_positions: int=20, batched=False):
         """
@@ -126,47 +124,42 @@ class PositionalEncoding(nn.Module):
         if self.batched:
             # Use unsqueeze to form a [1, seq len, embedding dim] tensor -- broadcasting will ensure that this
             # gets added correctly across the batch
-            emb_unsq = self.emb(indices_to_embed).unsqueeze(0).type(x.dtype)
+            emb_unsq = self.emb(indices_to_embed).unsqueeze(0)
             return x + emb_unsq
         else:
-            return x + self.emb(indices_to_embed).type(x.dtype)
+            return x + self.emb(indices_to_embed)
+
+            
 
 
+# This is a skeleton for train_classifier: you can implement this however you want
 def train_classifier(args, train, dev):
     vocab_size = 27
     num_positions = 20
     d_model = 100
     d_internal = 50
     model = Transformer(vocab_size, num_positions, d_model, d_internal, 3, 1)
-    
-    # model.forward(blah)
-    loss_fcn = nn.NLLLoss()
-    
-    # result = model.forward(blah)
-    
-    # loss = loss_fcn(result, train[0].output_tensor) 
-    # print(loss)
+
+    negative_log_loss = nn.NLLLoss()
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
     num_epochs = 10
     for t in range(0, num_epochs):
-        loss_this_epoch = 0.0
-        random.seed(t)
-        # You can use batching if you'd like
-        ex_idxs = [i for i in range(0, len(train))]
-        # ex_idxs = [i for i in range(0, 20)]
+        total_loss = 0.0
         random.shuffle(ex_idxs)
         
+        ex_idxs = [i for i in range(0, len(train))]
+
         for x in ex_idxs:
             ex = train[x]
             model.zero_grad()
             result, _ = model.forward(ex.input_tensor)
-            loss = loss_fcn(result, ex.output_tensor) 
+            loss = negative_log_loss(result, ex.output_tensor) 
             
             loss.backward()
             optimizer.step()
-            loss_this_epoch += loss.item()
-        print(loss_this_epoch)
+            total_loss += loss.item()
+        print(total_loss)
     model.eval()
     return model
     
@@ -203,13 +196,16 @@ def decode(model: Transformer, dev_examples: List[LetterCountingExample], do_pri
         if do_plot_attn:
             for j in range(0, len(attn_maps)):
                 attn_map = attn_maps[j]
+                # print(f"Attention Map Shape: {attn_map.shape}")  # Add this line
+                # print(f"Shape of the first attention map: {attn_maps[0].shape}")
                 fig, ax = plt.subplots()
-                im = ax.imshow(attn_map.detach().numpy(), cmap='hot', interpolation='nearest')
+                # im = ax.imshow(attn_map.detach().numpy(), cmap='hot', interpolation='nearest')
                 ax.set_xticks(np.arange(len(ex.input)), labels=ex.input)
                 ax.set_yticks(np.arange(len(ex.input)), labels=ex.input)
                 ax.xaxis.tick_top()
                 # plt.show()
                 plt.savefig("plots/%i_attns%i.png" % (i, j))
+                print(f"After plotting: Attention Map Shape: {attn_map.shape}")
         acc = sum([predictions[i] == ex.output[i] for i in range(0, len(predictions))])
         num_correct += acc
         num_total += len(predictions)
