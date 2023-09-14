@@ -23,19 +23,16 @@ class LetterCountingExample(object):
 # to return distributions over the labels (0, 1, or 2).
 class Transformer(nn.Module):
     def __init__(self, vocab_size, num_positions, d_model, d_internal, num_classes, num_layers):
-        """
-        :param vocab_size: vocabulary size of the embedding layer
-        :param num_positions: max sequence length that will be fed to the model; should be 20
-        :param d_model: see TransformerLayer
-        :param d_internal: see TransformerLayer
-        :param num_classes: number of classes predicted at the output layer; should be 3
-        :param num_layers: number of TransformerLayers to use; can be whatever you want
-        """
         super().__init__()
-        self.embeddings = nn.Embedding(vocab_size, d_model)
-        self.positions = PositionalEncoding(d_model)
-        self.transformer = TransformerLayer(d_model, d_internal)
-        self.W = nn.Linear(d_internal, num_classes)
+        self.embedding_layer = nn.Embedding(vocab_size, d_model)
+        #(positions x classes = 20x3)
+        self.positional_encoder = PositionalEncoding(d_model)
+        self.transformer_layers = nn.ModuleList([
+            TransformerLayer(d_model, d_internal) for _ in range(num_layers)
+        ])
+        # self.transformer_layer2 = TransformerLayer(d_model, d_internal)
+        self.W_matrix = nn.Linear(d_internal, num_classes)
+        self.softmax =  nn.LogSoftmax(num_positions)
 
     def forward(self, indices):
         """
@@ -44,14 +41,14 @@ class Transformer(nn.Module):
         :return: A tuple of the softmax log probabilities (should be a 20x3 matrix) and a list of the attention
         maps you use in your layers (can be variable length, but each should be a 20x20 matrix)
         """
-        z = self.embeddings(indices)
-        a = self.positions.forward(z)
-        
-        b, att = self.transformer.forward(a)
-        c = self.W(b)
-        e = torch.nn.functional.log_softmax(c, dim=-1)
-
-        return e, att
+        z = self.embedding_layer(indices)
+        encoded_tensor = self.positional_encoder.forward(z)
+        for transformer_layer in self.transformer_layers:
+           linear_layer_transformer, attention = transformer_layer.forward(encoded_tensor)
+        matrix_tranformation = self.W_matrix(linear_layer_transformer)
+        # transform the matrix by performing a softmax
+        softmax = torch.nn.functional.log_softmax(matrix_tranformation, dim=-1)
+        return softmax, attention
 
 
 # Your implementation of the Transformer layer goes here. It should take vectors and return the same number of vectors
@@ -66,38 +63,47 @@ class TransformerLayer(nn.Module):
         """
         super().__init__()
         self.internal = d_model
-        self.WQ = nn.Linear(d_internal, d_model)
-        self.WK = nn.Linear(d_internal, d_model)
-        self.WV = nn.Linear(d_internal, d_model)
-        self.Lin = nn.Linear(d_internal, d_internal)
+        self.W_Q_matrix = nn.Linear(d_internal, d_model)
+        self.W_Q_weight = self.W_Q_matrix.weight
+        self.W_K_matrix = nn.Linear(d_internal, d_model)
+        self.W_K_weight = self.W_K_matrix.weight
+        self.W_V_matrix = nn.Linear(d_internal, d_model)
+        self.W_V_weight = self.W_V_matrix.weight
+        self.linear_layer = nn.Linear(d_internal, d_internal)
 
     def forward(self, input_vecs):
-        q = torch.matmul( input_vecs, self.WQ.weight)
-        k = torch.matmul( input_vecs, self.WK.weight)
-        v = torch.matmul( input_vecs, self.WV.weight)
+        q = torch.matmul(input_vecs, self.W_Q_weight)
+        k = torch.matmul(input_vecs, self.W_K_weight)
+        v = torch.matmul(input_vecs, self.W_K_weight)
 
-        att = self.attention(q,k,v, self.internal)
-        #lin lin lin relu lin lin softmax
 
-        c = torch.nn.functional.relu(att) 
-        d = self.Lin(c) 
-        # e = torch.nn.functional.relu(d)
-        # f = self.Lin2(e) 
-        # print("att:",att)
-        return d, att
-
-    
-    def attention(self, q, k, v, d_k, mask=None, dropout=None):
-    
-        scores = torch.matmul(q, k.transpose(-2, -1)) /  math.sqrt(d_k)
-        scores = torch.nn.functional.softmax(scores, dim = -1)
+        matrix_multiplication = torch.matmul(q, k.transpose(-2, -1)) /  math.sqrt(self.internal)
+        scores = torch.nn.functional.softmax(matrix_multiplication, dim = -1)
             
-        output = torch.matmul(scores, v)
-        return output
+        attention = torch.matmul(scores, v)
+        c = torch.nn.functional.relu(attention) 
+        d = self.linear_layer(c) 
+        return d, attention
 
 
 # Implementation of positional encoding that you can use in your network
 #Undo mods
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model: int, num_positions: int=20, batched=False):
+        """
+        :param d_model: dimensionality of the embedding layer to your model; since the position encodings are being
+        added to character encodings, these need to match (and will match the dimension of the subsequent Transformer
+        layer inputs/outputs)
+        :param num_positions: the number of positions that need to be encoded; the maximum sequence length this
+        module will see
+        :param batched: True if you are using batching, False otherwise
+        """
+        super().__init__()
+        # Dict size
+        self.emb = nn.Embedding(num_positions, d_model)
+        self.batched = batched
+
+
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model: int, num_positions: int=20, batched=False):
         """
@@ -134,32 +140,25 @@ class PositionalEncoding(nn.Module):
 
 # This is a skeleton for train_classifier: you can implement this however you want
 def train_classifier(args, train, dev):
-    vocab_size = 27
-    num_positions = 20
-    d_model = 100
-    d_internal = 50
-    model = Transformer(vocab_size, num_positions, d_model, d_internal, 3, 1)
-
-    negative_log_loss = nn.NLLLoss()
+    model = Transformer(vocab_size=27, num_positions=20, d_model=100, d_internal=50, num_classes=3, num_layers=2)
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
-
     num_epochs = 10
     for t in range(0, num_epochs):
-        total_loss = 0.0
-        random.shuffle(ex_idxs)
-        
+        loss_this_epoch = 0.0
+        random.seed(t)
         ex_idxs = [i for i in range(0, len(train))]
-
-        for x in ex_idxs:
-            ex = train[x]
+        random.shuffle(ex_idxs)
+        loss_fcn = nn.NLLLoss()
+        for ex_idx in ex_idxs:
+            ex = train[ex_idx]
             model.zero_grad()
             result, _ = model.forward(ex.input_tensor)
-            loss = negative_log_loss(result, ex.output_tensor) 
+            loss = loss_fcn(result, ex.output_tensor) 
             
             loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
-        print(total_loss)
+            optimizer.step()       
+            loss_this_epoch += loss.item()
+        print("Total loss on epoch %i: %f" % (t, loss_this_epoch))
     model.eval()
     return model
     
@@ -196,8 +195,6 @@ def decode(model: Transformer, dev_examples: List[LetterCountingExample], do_pri
         if do_plot_attn:
             for j in range(0, len(attn_maps)):
                 attn_map = attn_maps[j]
-                # print(f"Attention Map Shape: {attn_map.shape}")  # Add this line
-                # print(f"Shape of the first attention map: {attn_maps[0].shape}")
                 fig, ax = plt.subplots()
                 # im = ax.imshow(attn_map.detach().numpy(), cmap='hot', interpolation='nearest')
                 ax.set_xticks(np.arange(len(ex.input)), labels=ex.input)
