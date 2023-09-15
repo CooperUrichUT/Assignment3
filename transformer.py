@@ -143,7 +143,7 @@ class PositionalEncoding(nn.Module):
 
 # This is a skeleton for train_classifier: you can implement this however you want
 def train_classifier(args, train, dev):
-    model = Transformer(vocab_size=27, num_positions=20, d_model=100, d_internal=50, num_classes=3, num_layers=3)
+    model = Transformer(vocab_size=27, num_positions=20, d_model=100, d_internal=50, num_classes=3, num_layers=1)
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
     num_epochs = 10
     for t in range(0, num_epochs):
