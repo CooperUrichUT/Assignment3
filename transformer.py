@@ -2,6 +2,7 @@
 import math
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 import random
 from torch import optim
@@ -18,21 +19,27 @@ class LetterCountingExample(object):
         self.output_tensor = torch.LongTensor(self.output)
 
 
-# Should contain your overall Transformer implementation. You will want to use Transformer layer to implement
-# a single layer of the Transformer; this Module will take the raw words as input and do all of the steps necessary
-# to return distributions over the labels (0, 1, or 2).
 class Transformer(nn.Module):
     def __init__(self, vocab_size, num_positions, d_model, d_internal, num_classes, num_layers):
+        """
+        :param vocab_size: vocabulary size of the embedding layer
+        :param num_positions: max sequence length that will be fed to the model; should be 20
+        :param d_model: see TransformerLayer
+        :param d_internal: see TransformerLayer
+        :param num_classes: number of classes predicted at the output layer; should be 3
+        :param num_layers: number of TransformerLayers to use; can be whatever you want
+        """
         super().__init__()
         self.embedding_layer = nn.Embedding(vocab_size, d_model)
-        #(positions x classes = 20x3)
+        #20x3
+
+#         # Add multiple layers, however 1 layer works best    
+#         self.transformer_layers = nn.ModuleList([
+#             TransformerLayer(d_model, d_internal) for _ in range(num_layers)
+#         ])
         self.positional_encoder = PositionalEncoding(d_model)
-        self.transformer_layers = nn.ModuleList([
-            TransformerLayer(d_model, d_internal) for _ in range(num_layers)
-        ])
-        # self.transformer_layer2 = TransformerLayer(d_model, d_internal)
-        self.W_matrix = nn.Linear(d_internal, num_classes)
-        self.softmax =  nn.LogSoftmax(num_positions)
+        self.transformer = TransformerLayer(d_model, d_internal)
+        self.W_Matrix = nn.Linear(d_internal, num_classes)
 
     def forward(self, indices):
         """
@@ -41,20 +48,23 @@ class Transformer(nn.Module):
         :return: A tuple of the softmax log probabilities (should be a 20x3 matrix) and a list of the attention
         maps you use in your layers (can be variable length, but each should be a 20x20 matrix)
         """
-        z = self.embedding_layer(indices)
-        encoded_tensor = self.positional_encoder.forward(z)
-        # Cycle through the number of transformation layers
-        for transformer_layer in self.transformer_layers:
-           linear_layer_transformer, attention = transformer_layer.forward(encoded_tensor)
-        matrix_tranformation = self.W_matrix(linear_layer_transformer)
-        # transform the matrix by performing a softmax
-        softmax = torch.nn.functional.log_softmax(matrix_tranformation, dim=-1)
+        embeddings = self.embedding_layer(indices)
+        positions = self.positional_encoder.forward(embeddings)
+
+#         # Cycle through the number of transformation, single head works best so will comment this out
+#         for transformer_layer in self.transformer_layers:
+#            linear_layer_transformer, attention = transformer_layer.forward(encoded_tensor)
+        
+        linear_layer_transforer, attention = self.transformer.forward(positions)
+        matrix_tranformation = self.W_Matrix(linear_layer_transforer)
+        softmax = F.log_softmax(matrix_tranformation, dim=-1)
+
         return softmax, attention
+    
 
 
 # Your implementation of the Transformer layer goes here. It should take vectors and return the same number of vectors
 # of the same length, applying self-attention, the feedforward layer, etc.
-# 
 class TransformerLayer(nn.Module):
     def __init__(self, d_model, d_internal):
         """
@@ -64,28 +74,48 @@ class TransformerLayer(nn.Module):
         should both be of this length.
         """
         super().__init__()
+        # d_k matrix
         self.internal = d_model
-        self.W_Query_matrix = nn.Linear(d_internal, d_model)
-        self.W_Q_weight = self.W_Query_matrix.weight
-        self.W_Key_matrix = nn.Linear(d_internal, d_model)
-        self.W_K_weight = self.W_Key_matrix.weight
-        self.W_Value_matrix = nn.Linear(d_internal, d_model)
-        self.W_V_weight = self.W_Value_matrix.weight
+        # all matrices and their weights
+        self.W_Q_Matrix = nn.Linear(d_internal, d_model)
+        self.W_Q_Weight = self.W_Q_Matrix.weight
+        self.W_K_Matrix = nn.Linear(d_internal, d_model)
+        self.W_K_Weight = self.W_K_Matrix.weight
+        self.W_V_Matrix = nn.Linear(d_internal, d_model)
+        self.W_V_Weight = self.W_V_Matrix.weight
+
+        # single linear layer
         self.linear_layer = nn.Linear(d_internal, d_internal)
+        # self.Lin2 = nn.Linear(d_internal, d_internal)
 
-    # tranformer
+
+
+
+# https://stackoverflow.com/questions/57793574/self-attention-explainability-of-the-output-score-matrix
     def forward(self, input_vecs):
-        query = torch.matmul(input_vecs, self.W_Q_weight)
-        key = torch.matmul(input_vecs, self.W_K_weight)
-
-        scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(self.internal)
-        attention = torch.nn.functional.softmax(scores, dim=-1)
-        
-        value = torch.matmul(input_vecs, self.W_K_weight)
-        attended_values = torch.matmul(attention, value)
-        ReLU = torch.nn.functional.relu(attended_values) 
-        step = self.linear_layer(ReLU) 
+        # X * W^Q
+        queries = torch.matmul(input_vecs, self.W_Q_Weight)
+        # X * W^K
+        keys = torch.matmul(input_vecs, self.W_K_Weight)
+        # X * W^V
+        values = torch.matmul(input_vecs, self.W_V_Weight)
+        # Get the attention value
+        attention = self.attention_algorithm(queries,keys,values, self.internal)
+        # apply ReLU
+        relu = torch.nn.functional.relu(attention) 
+        # Step forward
+        step = self.linear_layer(relu) 
         return step, attention
+
+    
+    def attention_algorithm(self, queries, keys, values, d_k, mask=None, dropout=None):
+        # multiply Q x kT, divide by the square root of d_k
+        inner = torch.matmul(queries, keys.transpose(-2, -1)) /  math.sqrt(d_k)
+        # take softmax
+        softmax = torch.nn.functional.softmax(inner, dim = -1)
+        # multiply by values matrix
+        attention = torch.matmul(softmax, values)
+        return attention
 
 
 
