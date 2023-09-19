@@ -108,7 +108,7 @@ class TransformerLayer(nn.Module):
         return step, attention
 
     
-    def attention_algorithm(self, queries, keys, values, d_k, mask=None, dropout=None):
+    def attention_algorithm(self, queries, keys, values, d_k):
         # multiply Q x kT, divide by the square root of d_k
         inner = torch.matmul(queries, keys.transpose(-2, -1)) /  math.sqrt(d_k)
         # take softmax
@@ -116,25 +116,6 @@ class TransformerLayer(nn.Module):
         # multiply by values matrix
         attention = torch.matmul(softmax, values)
         return attention
-
-
-
-# Implementation of positional encoding that you can use in your network
-#Undo mods
-class PositionalEncoding(nn.Module):
-    def __init__(self, d_model: int, num_positions: int=20, batched=False):
-        """
-        :param d_model: dimensionality of the embedding layer to your model; since the position encodings are being
-        added to character encodings, these need to match (and will match the dimension of the subsequent Transformer
-        layer inputs/outputs)
-        :param num_positions: the number of positions that need to be encoded; the maximum sequence length this
-        module will see
-        :param batched: True if you are using batching, False otherwise
-        """
-        super().__init__()
-        # Dict size
-        self.emb = nn.Embedding(num_positions, d_model)
-        self.batched = batched
 
 
 class PositionalEncoding(nn.Module):
